@@ -1,0 +1,38 @@
+# ---------------------------------------------------------------------------
+# Book-derived content -- NEVER committed.
+#
+# The repository holds code and configuration only. The source rulebook is
+# commercial, copyrighted material; neither it nor any text extracted from it
+# goes into version control. Note this is broader than just the PDF: the
+# SQLite database holds the full per-page text, so it is book content rather
+# than a build artifact, and the same is true of the vocabulary file and the
+# eval gold set derived from the book's own index.
+# ---------------------------------------------------------------------------
+data/
+*.pdf
+*.db
+*.sqlite
+*.sqlite3
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.env
+build/
+dist/
+
+# Tooling
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+
+# Editors / OS
+.vscode/
+.idea/
+Thumbs.db
+desktop.ini
