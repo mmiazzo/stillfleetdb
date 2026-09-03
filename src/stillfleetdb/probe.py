@@ -19,24 +19,16 @@ Run:  python -m stillfleetdb.probe
 from __future__ import annotations
 
 import argparse
-import collections
 import json
 import re
+import sys
 import statistics
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
 import pymupdf
 
-from . import config
-
-# A folio is usually a bare number on its own line in the header or footer, but
-# it is often set alongside a running head ("42   CHAPTER THREE"). We look at the
-# first and last few lines of each page and accept a number anchored to either
-# end of a line, requiring the rest of the line to be short so that we do not
-# mistake body text or a table cell for a page number.
-_BARE_NUMBER = re.compile(r"^\s*(\d{1,4})\s*$")
-_EDGE_NUMBER = re.compile(r"^\s*(\d{1,4})\b(.{0,40})$|^(.{0,40}?)\b(\d{1,4})\s*$")
+from . import config, pagenum
 
 # Landmark headings we care about locating.
 _LANDMARKS = {
@@ -84,61 +76,23 @@ def _page_edge_lines(text: str, n: int = 3) -> tuple[list[str], list[str]]:
     return lines[:n], lines[-n:]
 
 
-def _folio_candidates(text: str) -> set[int]:
-    """Every number that could plausibly be this page's folio.
-
-    We deliberately do not guess whether the folio lives in the header or the
-    footer -- this book puts it in the header, but relying on that would break
-    on the next book and silently mis-cite pages. Instead we gather candidates
-    from both edges and let the modal-offset pass below decide which is real.
-    """
-    head, tail = _page_edge_lines(text)
-    candidates: set[int] = set()
-    for line in head + tail:
-        m = _BARE_NUMBER.match(line)
-        if m:
-            candidates.add(int(m.group(1)))
-            continue
-        m = _EDGE_NUMBER.match(line)
-        if m:
-            value = m.group(1) or m.group(4)
-            if value:
-                candidates.add(int(value))
-    return candidates
-
-
 def probe(pdf_path: Path, *, verbose: bool = True) -> ProbeReport:
     doc = pymupdf.open(pdf_path)
 
-    # Pass 1: gather folio candidates and let the whole book vote on the offset.
-    # A folio is by definition near its page index, so the correct offset is the
-    # one the largest number of pages agree on; stray numbers from stat blocks
-    # and tables scatter and lose.
-    candidates: list[set[int]] = []
-    for page in doc:
-        candidates.append(_folio_candidates(page.get_text()))
+    # Folio <-> pdf-index resolution is shared with extract.py -- see pagenum.py
+    # for the two-pass voting algorithm.
+    folios = pagenum.resolve(doc)
 
-    votes = collections.Counter(
-        folio - (i + 1) for i, cands in enumerate(candidates) for folio in cands
-    )
-    offset: int | None = None
-    if votes:
-        offset = votes.most_common(1)[0][0]
-
-    # Pass 2: keep only the candidate consistent with that offset.
     pages: list[PageProbe] = []
     for page in doc:
         text = page.get_text()
         pdf_index = page.number + 1
-        folio = None
-        if offset is not None and (pdf_index + offset) in candidates[page.number]:
-            folio = pdf_index + offset
         pages.append(
             PageProbe(
                 pdf_index=pdf_index,
                 chars=len(text.strip()),
                 images=len(page.get_images(full=True)),
-                folio=folio,
+                folio=folios.printed_page.get(pdf_index),
                 head=" / ".join(_page_edge_lines(text, 2)[0])[:80],
             )
         )
@@ -147,11 +101,9 @@ def probe(pdf_path: Path, *, verbose: bool = True) -> ProbeReport:
     sparse_with_images = [
         p.pdf_index for p in pages if 0 < p.chars < _SPARSE_PAGE_CHARS and p.images
     ]
-
-    # Coverage of the agreed offset. Pages without a consistent folio are
-    # expected -- full-bleed art plates and front matter carry no printed
-    # number at all -- so this is a coverage figure, not an error rate.
-    confidence = sum(1 for p in pages if p.folio is not None) / max(len(pages), 1)
+    # Pages without a consistent folio are expected -- full-bleed art plates and
+    # front matter carry no printed number at all -- so this is a coverage
+    # figure, not an error rate.
     unresolved = [p.pdf_index for p in pages if p.folio is None]
 
     toc = doc.get_toc()
@@ -177,8 +129,8 @@ def probe(pdf_path: Path, *, verbose: bool = True) -> ProbeReport:
         estimated_tokens=round(total_chars / 4),
         pages_with_no_text=no_text,
         sparse_pages_with_images=sparse_with_images,
-        folio_offset=offset,
-        folio_coverage=round(confidence, 3),
+        folio_offset=folios.offset,
+        folio_coverage=folios.coverage,
         folio_unresolved_pages=unresolved,
         has_bookmarks=bool(toc),
         bookmark_count=len(toc),
@@ -252,6 +204,11 @@ def _print_report(r: ProbeReport, pages: list[PageProbe]) -> None:
 
 
 def main() -> None:
+    # Bookmark titles can carry non-ASCII glyphs (this book uses ☉), and
+    # not every terminal this runs in is UTF-8 (Windows consoles often default
+    # to cp1252) -- degrade to replacement characters rather than crash.
+    sys.stdout.reconfigure(errors="replace")
+
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--pdf", type=Path, default=None)
     ap.add_argument(
