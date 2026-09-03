@@ -75,7 +75,7 @@ def extract(
         )
 
     t0 = time.time()
-    chunks = pymupdf4llm.to_markdown(doc, page_chunks=True)
+    chunks = pymupdf4llm.to_markdown(doc, page_chunks=True, show_progress=verbose)
     if verbose:
         print(f"pymupdf4llm.to_markdown: {len(chunks)} pages in {time.time() - t0:.1f}s")
 
